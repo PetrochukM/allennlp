@@ -2,7 +2,8 @@ from typing import Dict, Union, Set
 import logging
 
 from overrides import overrides
-import numpy
+import torch
+from torch.autograd import Variable
 
 from allennlp.data.fields.field import Field
 from allennlp.data.vocabulary import Vocabulary
@@ -11,7 +12,7 @@ from allennlp.common.checks import ConfigurationError
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 
-class LabelField(Field[numpy.ndarray]):
+class LabelField(Field[torch.Tensor]):
     """
     A ``LabelField`` is a categorical label of some kind, where the labels are either strings of
     text or 0-indexed integers (if you wish to skip indexing by passing skip_indexing=True).
@@ -62,7 +63,6 @@ class LabelField(Field[numpy.ndarray]):
                                          "Found label: {} with type: {}.".format(label, type(label)))
 
     def _maybe_warn_for_namespace(self, label_namespace: str) -> None:
-
         if not (self._label_namespace.endswith("labels") or self._label_namespace.endswith("tags")):
             if label_namespace not in self._already_warned_namespaces:
                 logger.warning("Your label namespace was '%s'. We recommend you use a namespace "
@@ -87,8 +87,13 @@ class LabelField(Field[numpy.ndarray]):
         return {}
 
     @overrides
-    def as_array(self, padding_lengths: Dict[str, int]) -> numpy.ndarray:  # pylint: disable=unused-argument
-        return numpy.asarray([self._label_id])
+    def as_tensor(self,
+                  padding_lengths: Dict[str, int],
+                  cuda_device: int = -1,
+                  for_training: bool = True) -> torch.Tensor:
+        # pylint: disable=unused-argument
+        tensor = Variable(torch.LongTensor([self._label_id]), volatile=not for_training)
+        return tensor if cuda_device == -1 else tensor.cuda(cuda_device)
 
     @overrides
     def empty_field(self):

@@ -1,18 +1,44 @@
 """
 Assorted utilities for working with neural networks in AllenNLP.
 """
-
-from typing import Dict, List, Optional, Union, Any, Tuple, Callable
+from collections import defaultdict
+from typing import Dict, List, Optional, Any, Tuple, Callable
 import logging
 
 import math
-import numpy
 import torch
 from torch.autograd import Variable
 
 from allennlp.common.checks import ConfigurationError
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
+
+
+def batch_tensor_dicts(tensor_dicts: List[Dict[str, torch.Tensor]],
+                       remove_trailing_dimension: bool = False) -> Dict[str, torch.Tensor]:
+    """
+    Takes a list of tensor dictionaries, where each dictionary is assumed to have matching keys,
+    and returns a single dictionary with all tensors with the same key batched together.
+
+    Parameters
+    ----------
+    tensor_dicts : ``List[Dict[str, torch.Tensor]]``
+        The list of tensor dictionaries to batch.
+    remove_trailing_dimension : ``bool``
+        If ``True``, we will check for a trailing dimension of size 1 on the tensors that are being
+        batched, and remove it if we find it.
+    """
+    key_to_tensors: Dict[str, List[torch.Tensor]] = defaultdict(list)
+    for tensor_dict in tensor_dicts:
+        for key, tensor in tensor_dict.items():
+            key_to_tensors[key].append(tensor)
+    batched_tensors = {}
+    for key, tensor_list in key_to_tensors.items():
+        batched_tensor = torch.stack(tensor_list)
+        if remove_trailing_dimension and all(tensor.size(-1) == 1 for tensor in tensor_list):
+            batched_tensor = batched_tensor.squeeze(-1)
+        batched_tensors[key] = batched_tensor
+    return batched_tensors
 
 
 def get_lengths_from_binary_sequence_mask(mask: torch.Tensor):
@@ -106,56 +132,6 @@ def get_dropout_mask(dropout_probability: float, tensor_for_masking: torch.autog
     return dropout_mask
 
 
-def arrays_to_variables(data_structure: Dict[str, Union[dict, numpy.ndarray]],
-                        cuda_device: int = -1,
-                        add_batch_dimension: bool = False,
-                        for_training: bool = True):
-    """
-    Convert an (optionally) nested dictionary of arrays to Pytorch ``Variables``,
-    suitable for use in a computation graph.
-
-    Parameters
-    ----------
-    data_structure : Dict[str, Union[dict, numpy.ndarray]], required.
-        The nested dictionary of arrays to convert to Pytorch ``Variables``.
-    cuda_device : int, optional (default = -1)
-        If cuda_device <= 0, GPUs are available and Pytorch was compiled with
-        CUDA support, the tensor will be copied to the cuda_device specified.
-    add_batch_dimension : bool, optional (default = False).
-        Optionally add a batch dimension to tensors converted to ``Variables``
-        using this function. This is useful during inference for passing
-        tensors representing a single example to a Pytorch model which
-        would otherwise not have a batch dimension.
-    for_training : ``bool``, optional (default = ``True``)
-        If ``False``, we will pass the ``volatile=True`` flag when constructing variables, which
-        disables gradient computations in the graph.  This makes inference more efficient
-        (particularly in memory usage), but is incompatible with training models.
-
-    Returns
-    -------
-    The original data structure or tensor converted to a Pytorch ``Variable``.
-    """
-    if isinstance(data_structure, dict):
-        for key, value in data_structure.items():
-            # This check is a bit hacky, but I'm not sure how else to handle this.  By this point,
-            # we've lost all reference to the original `Field` object.
-            if 'metadata' in key:
-                if add_batch_dimension:
-                    data_structure[key] = [value]
-            else:
-                data_structure[key] = arrays_to_variables(value, cuda_device, add_batch_dimension)
-        return data_structure
-    else:
-        tensor = torch.from_numpy(data_structure)
-        if add_batch_dimension:
-            tensor.unsqueeze_(0)
-        torch_variable = Variable(tensor, volatile=not for_training)
-        if cuda_device == -1:
-            return torch_variable
-        else:
-            return torch_variable.cuda(cuda_device)
-
-
 def masked_softmax(vector, mask):
     """
     ``torch.nn.functional.softmax(vector)`` does not work if some elements of ``vector`` should be
@@ -169,10 +145,10 @@ def masked_softmax(vector, mask):
     that uses categorical cross-entropy loss.
     """
     if mask is None:
-        result = torch.nn.functional.softmax(vector)
+        result = torch.nn.functional.softmax(vector, dim=-1)
     else:
         # To limit numerical errors from large vector elements outside mask, we zero these out
-        result = torch.nn.functional.softmax(vector * mask)
+        result = torch.nn.functional.softmax(vector * mask, dim=-1)
         result = result * mask
         result = result / (result.sum(dim=1, keepdim=True) + 1e-13)
     return result
@@ -192,7 +168,7 @@ def masked_log_softmax(vector, mask):
     """
     if mask is not None:
         vector = vector + mask.log()
-    return torch.nn.functional.log_softmax(vector)
+    return torch.nn.functional.log_softmax(vector, dim=1)
 
 
 def viterbi_decode(tag_sequence: torch.Tensor,
@@ -436,7 +412,7 @@ def sequence_cross_entropy_with_logits(logits: torch.FloatTensor,
     # shape : (batch * sequence_length, num_classes)
     logits_flat = logits.view(-1, logits.size(-1))
     # shape : (batch * sequence_length, num_classes)
-    log_probs_flat = torch.nn.functional.log_softmax(logits_flat)
+    log_probs_flat = torch.nn.functional.log_softmax(logits_flat, dim=-1)
     # shape : (batch * max_len, 1)
     targets_flat = targets.view(-1, 1).long()
 
@@ -822,7 +798,8 @@ def add_sentence_boundary_token_ids(tensor: torch.Tensor,
         The new mask for the tensor, taking into account the appended tokens
         marking the beginning and end of the sentence.
     """
-    sequence_lengths = mask.sum(dim=1).data.numpy()
+    # TODO: matthewp, profile this transfer
+    sequence_lengths = mask.sum(dim=1).data.cpu().numpy()
     tensor_shape = list(tensor.data.shape)
     new_shape = list(tensor_shape)
     new_shape[1] = tensor_shape[1] + 2
@@ -872,14 +849,70 @@ def remove_sentence_boundaries(tensor: torch.Tensor,
     new_mask : ``torch.Tensor``
         The new mask for the tensor of shape ``(batch_size, timesteps - 2)``.
     """
-    sequence_lengths = mask.sum(dim=1).data.numpy()
+    # TODO: matthewp, profile this transfer
+    sequence_lengths = mask.sum(dim=1).data.cpu().numpy()
     tensor_shape = list(tensor.data.shape)
     new_shape = list(tensor_shape)
     new_shape[1] = tensor_shape[1] - 2
     tensor_without_boundary_tokens = Variable(tensor.data.new(*new_shape).fill_(0))
     new_mask = Variable(tensor.data.new(new_shape[0], new_shape[1]).fill_(0)).long()
     for i, j in enumerate(sequence_lengths):
-        tensor_without_boundary_tokens.data[i, :(j - 2), :] = tensor.data[i, 1:(j - 1), :]
-        new_mask[i, :(j - 2)] = 1
+        if j > 2:
+            tensor_without_boundary_tokens[i, :(j - 2), :] = tensor[i, 1:(j - 1), :]
+            new_mask[i, :(j - 2)] = 1
 
     return tensor_without_boundary_tokens, new_mask
+
+
+def add_positional_features(tensor: torch.Tensor,
+                            min_timescale: float = 1.0,
+                            max_timescale: float = 1.0e4):
+    # pylint: disable=line-too-long
+    """
+    Implements the frequency-based positional encoding described
+    in `Attention is all you Need
+    <https://www.semanticscholar.org/paper/Attention-Is-All-You-Need-Vaswani-Shazeer/0737da0767d77606169cbf4187b83e1ab62f6077>`_ .
+
+    Adds sinusoids of different frequencies to a ``Tensor``. A sinusoid of a
+    different frequency and phase is added to each dimension of the input ``Tensor``.
+    This allows the attention heads to use absolute and relative positions.
+
+    The number of timescales is equal to hidden_dim / 2 within the range
+    (min_timescale, max_timescale). For each timescale, the two sinusoidal
+    signals sin(timestep / timescale) and cos(timestep / timescale) are
+    generated and concatenated along the hidden_dim dimension.
+
+    Parameters
+    ----------
+    tensor : ``torch.Tensor``
+        a Tensor with shape (batch_size, timesteps, hidden_dim).
+    min_timescale : ``float``, optional (default = 1.0)
+        The smallest timescale to use.
+    max_timescale : ``float``, optional (default = 1.0e4)
+        The largest timescale to use.
+
+    Returns
+    -------
+    The input tensor augmented with the sinusoidal frequencies.
+    """
+    _, timesteps, hidden_dim = tensor.size()
+
+    timestep_range = get_range_vector(timesteps, tensor.is_cuda).data.float()
+    # We're generating both cos and sin frequencies,
+    # so half for each.
+    num_timescales = hidden_dim // 2
+    timescale_range = get_range_vector(num_timescales, tensor.is_cuda).data.float()
+
+    log_timescale_increments = math.log(float(max_timescale) / float(min_timescale)) / float(num_timescales - 1)
+    inverse_timescales = min_timescale * torch.exp(timescale_range * -log_timescale_increments)
+
+    # Broadcasted multiplication - shape (timesteps, num_timescales)
+    scaled_time = timestep_range.unsqueeze(1) * inverse_timescales.unsqueeze(0)
+    # shape (timesteps, 2 * num_timescales)
+    sinusoids = Variable(torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], 1))
+    if hidden_dim % 2 != 0:
+        # if the number of dimensions is odd, the cos and sin
+        # timescales had size (hidden_dim - 1) / 2, so we need
+        # to add a row of zeros to make up the difference.
+        sinusoids = torch.cat([sinusoids, Variable(sinusoids.data.new(timesteps, 1).fill_(0))], 1)
+    return tensor + sinusoids.unsqueeze(0)

@@ -25,7 +25,7 @@ from allennlp.common.checks import ConfigurationError
 from allennlp.data import Dataset
 from allennlp.data.iterators.data_iterator import DataIterator
 from allennlp.models.model import Model
-from allennlp.nn.util import arrays_to_variables, device_mapping
+from allennlp.nn import util
 from allennlp.training.learning_rate_schedulers import LearningRateScheduler
 from allennlp.training.optimizers import Optimizer
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
@@ -173,7 +173,7 @@ class Trainer:
         Does a forward pass on the given batch and returns the ``loss`` value in the result.
         If ``for_training`` is `True` also applies regularization penalty.
         """
-        output_dict = self._forward(batch, for_training=for_training)
+        output_dict = self._model(**batch)
 
         try:
             loss = output_dict["loss"]
@@ -205,7 +205,9 @@ class Trainer:
         self._model.train()
 
         # Get tqdm for the training batches
-        train_generator = self._iterator(self._train_dataset, num_epochs=1)
+        train_generator = self._iterator(self._train_dataset,
+                                         num_epochs=1,
+                                         cuda_device=self._cuda_device)
         num_training_batches = self._iterator.get_num_batches(self._train_dataset)
         train_generator_tqdm = tqdm.tqdm(train_generator,
                                          disable=self._no_tqdm,
@@ -326,11 +328,14 @@ class Trainer:
         Computes the validation loss. Returns it and the number of batches.
         """
         logger.info("Validating")
-        num_validation_batches = self._iterator.get_num_batches(self._validation_dataset)
 
         self._model.eval()
 
-        val_generator = self._iterator(self._validation_dataset, num_epochs=1)
+        val_generator = self._iterator(self._validation_dataset,
+                                       num_epochs=1,
+                                       cuda_device=self._cuda_device,
+                                       for_training=False)
+        num_validation_batches = self._iterator.get_num_batches(self._validation_dataset)
         val_generator_tqdm = tqdm.tqdm(val_generator,
                                        disable=self._no_tqdm,
                                        total=num_validation_batches)
@@ -396,18 +401,14 @@ class Trainer:
             self._update_learning_rate(epoch, val_metric=this_epoch_val_metric)
 
             epoch_elapsed_time = time.time() - epoch_start_time
-            logger.info("Epoch duration: " + time.strftime("%H:%M:%S", time.gmtime(epoch_elapsed_time)))
+            logger.info("Epoch duration: %s", time.strftime("%H:%M:%S", time.gmtime(epoch_elapsed_time)))
 
             if epoch < self._num_epochs - 1:
                 training_elapsed_time = time.time() - training_start_time
                 estimated_time_remaining = training_elapsed_time * \
                     ((self._num_epochs - epoch_counter) / float(epoch - epoch_counter + 1) - 1)
                 formatted_time = time.strftime("%H:%M:%S", time.gmtime(estimated_time_remaining))
-                logger.info("Estimated training time remaining: " + formatted_time)
-
-    def _forward(self, batch: dict, for_training: bool) -> dict:
-        tensor_batch = arrays_to_variables(batch, self._cuda_device, for_training=for_training)
-        return self._model.forward(**tensor_batch)
+                logger.info("Estimated training time remaining: %s", formatted_time)
 
     def _description_from_metrics(self, metrics: Dict[str, float]) -> str:
         # pylint: disable=no-self-use
@@ -479,8 +480,8 @@ class Trainer:
         training_state_path = os.path.join(self._serialization_dir,
                                            "training_state_epoch_{}.th".format(epoch_to_load))
 
-        model_state = torch.load(model_path, map_location=device_mapping(self._cuda_device))
-        training_state = torch.load(training_state_path, map_location=device_mapping(self._cuda_device))
+        model_state = torch.load(model_path, map_location=util.device_mapping(self._cuda_device))
+        training_state = torch.load(training_state_path, map_location=util.device_mapping(self._cuda_device))
         self._model.load_state_dict(model_state)
         self._optimizer.load_state_dict(training_state["optimizer"])
 
@@ -504,12 +505,12 @@ class Trainer:
                     validation_dataset: Optional[Dataset],
                     params: Params) -> 'Trainer':
 
-        patience = params.pop("patience", 2)
+        patience = params.pop_int("patience", 2)
         validation_metric = params.pop("validation_metric", "-loss")
-        num_epochs = params.pop("num_epochs", 20)
-        cuda_device = params.pop("cuda_device", -1)
-        grad_norm = params.pop("grad_norm", None)
-        grad_clipping = params.pop("grad_clipping", None)
+        num_epochs = params.pop_int("num_epochs", 20)
+        cuda_device = params.pop_int("cuda_device", -1)
+        grad_norm = params.pop_float("grad_norm", None)
+        grad_clipping = params.pop_float("grad_clipping", None)
         lr_scheduler_params = params.pop("learning_rate_scheduler", None)
 
         if cuda_device >= 0:
@@ -521,7 +522,7 @@ class Trainer:
             scheduler = LearningRateScheduler.from_params(optimizer, lr_scheduler_params)
         else:
             scheduler = None
-        no_tqdm = params.pop("no_tqdm", False)
+        no_tqdm = params.pop_bool("no_tqdm", False)
 
         params.assert_empty(cls.__name__)
         return Trainer(model, optimizer, iterator,

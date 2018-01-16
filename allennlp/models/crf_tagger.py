@@ -5,7 +5,7 @@ import torch
 from torch.nn.modules.linear import Linear
 
 from allennlp.common import Params
-from allennlp.common.checks import ConfigurationError
+from allennlp.common.checks import check_dimensions_match
 from allennlp.data import Vocabulary
 from allennlp.modules import Seq2SeqEncoder, TimeDistributed, TextFieldEmbedder, ConditionalRandomField
 from allennlp.models.model import Model
@@ -59,11 +59,8 @@ class CrfTagger(Model):
                 "accuracy": BooleanAccuracy()
         }
 
-        if text_field_embedder.get_output_dim() != encoder.get_input_dim():
-            raise ConfigurationError("The output dimension of the text_field_embedder must match the "
-                                     "input dimension of the phrase_encoder. Found {} and {}, "
-                                     "respectively.".format(text_field_embedder.get_output_dim(),
-                                                            encoder.get_input_dim()))
+        check_dimensions_match(text_field_embedder.get_output_dim(), encoder.get_input_dim(),
+                               "text field embedding dim", "encoder input dim")
         initializer(self)
 
     @overrides
@@ -111,7 +108,7 @@ class CrfTagger(Model):
 
         if tags is not None:
             # Add negative log-likelihood as loss
-            log_likelihood = self.crf.forward(logits, tags, mask)
+            log_likelihood = self.crf(logits, tags, mask)
             output["loss"] = -log_likelihood
 
             # Pad predicted tags to be comparable

@@ -45,12 +45,43 @@ class Params(MutableMapping):
     # and passing no value to the default parameter of "pop".
     DEFAULT = object()
 
-    def __init__(self, params: Dict[str, Any], history: str = "") -> None:
+    def __init__(self,
+                 params: Dict[str, Any],
+                 history: str = "",
+                 loading_from_archive: bool = False,
+                 files_to_archive: Dict[str, str] = None) -> None:
         self.params = _replace_none(params)
         self.history = history
+        self.loading_from_archive = loading_from_archive
+        self.files_to_archive = {} if files_to_archive is None else files_to_archive
+
+    def add_file_to_archive(self, name: str) -> None:
+        """
+        Any class in its ``from_params`` method can request that some of its
+        input files be added to the archive by calling this method.
+
+        For example, if some class ``A`` had an ``input_file`` parameter, it could call
+
+        ```
+        params.add_file_to_archive("input_file")
+        ```
+
+        which would store the supplied value for ``input_file`` at the key
+        ``previous.history.and.then.input_file``. The ``files_to_archive`` dict
+        is shared with child instances via the ``_check_is_dict`` method, so that
+        the final mapping can be retrieved from the top-level ``Params`` object.
+
+        NOTE: You must call ``add_file_to_archive`` before you ``pop()``
+        the parameter, because the ``Params`` instance looks up the value
+        of the filename inside itself.
+
+        If the ``loading_from_archive`` flag is True, this will be a no-op.
+        """
+        if not self.loading_from_archive:
+            self.files_to_archive[f"{self.history}{name}"] = self.get(name)
 
     @overrides
-    def pop(self, key: str, default: Any = DEFAULT):
+    def pop(self, key: str, default: Any = DEFAULT) -> Any:
         """
         Performs the functionality associated with dict.pop(key), along with checking for
         returned dictionaries, replacing them with Param objects with an updated history.
@@ -69,6 +100,42 @@ class Params(MutableMapping):
             logger.info(self.history + key + " = " + str(value))  # type: ignore
         return self._check_is_dict(key, value)
 
+    def pop_int(self, key: str, default: Any = DEFAULT) -> int:
+        """
+        Performs a pop and coerces to an int.
+        """
+        value = self.pop(key, default)
+        if value is None:
+            return None
+        else:
+            return int(value)
+
+    def pop_float(self, key: str, default: Any = DEFAULT) -> float:
+        """
+        Performs a pop and coerces to a float.
+        """
+        value = self.pop(key, default)
+        if value is None:
+            return None
+        else:
+            return float(value)
+
+    def pop_bool(self, key: str, default: Any = DEFAULT) -> bool:
+        """
+        Performs a pop and coerces to a bool.
+        """
+        value = self.pop(key, default)
+        if value is None:
+            return None
+        elif isinstance(value, bool):
+            return value
+        elif value == "true":
+            return True
+        elif value == "false":
+            return False
+        else:
+            raise ValueError("Cannot convert variable to bool: " + value)
+
     @overrides
     def get(self, key: str, default: Any = DEFAULT):
         """
@@ -84,7 +151,7 @@ class Params(MutableMapping):
             value = self.params.get(key, default)
         return self._check_is_dict(key, value)
 
-    def pop_choice(self, key: str, choices: List[Any], default_to_first_choice: bool = False):
+    def pop_choice(self, key: str, choices: List[Any], default_to_first_choice: bool = False) -> Any:
         """
         Gets the value of ``key`` in the ``params`` dictionary, ensuring that the value is one of
         the given choices. Note that this `pops` the key from params, modifying the dictionary,
@@ -182,7 +249,10 @@ class Params(MutableMapping):
     def _check_is_dict(self, new_history, value):
         if isinstance(value, dict):
             new_history = self.history + new_history + "."
-            return Params(value, new_history)
+            return Params(value,
+                          history=new_history,
+                          loading_from_archive=self.loading_from_archive,
+                          files_to_archive=self.files_to_archive)
         if isinstance(value, list):
             value = [self._check_is_dict(new_history + '.list', v) for v in value]
         return value

@@ -50,8 +50,8 @@ run chmod 600 ./pypirc so only you can read/write.
 7. Copy the release notes from RELEASE.md to the tag in github once everything is looking hunky-dory.
 
 """
-import os
 from setuptools import setup, find_packages
+from allennlp import version
 
 # PEP0440 compatible formatted version, see:
 # https://www.python.org/dev/peps/pep-0440/
@@ -66,7 +66,7 @@ from setuptools import setup, find_packages
 #   X.YrcN  # Release Candidate
 #   X.Y     # Final release
 
-VERSION = '0.2.2'
+VERSION = version.VERSION
 
 
 setup(name='allennlp',
@@ -95,17 +95,17 @@ setup(name='allennlp',
           'tensorboard',
           'cffi==1.11.2',
           'awscli>=1.11.91',
-          'sanic==0.6.0',
+          'flask==0.12.1',
+          'flask-cors==3.0.3',
           'psycopg2',
-          'sanic-cors',
           'argparse',
           'requests>=2.18',
           'tqdm',
           'editdistance',
-          'jupyter',
           'h5py',
           'scikit-learn',
-          'scipy'
+          'scipy',
+          'pytz==2017.3'
       ],
       setup_requires=['pytest-runner'],
       tests_require=['pytest'],

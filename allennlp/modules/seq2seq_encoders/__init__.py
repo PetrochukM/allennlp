@@ -26,6 +26,8 @@ from allennlp.modules.seq2seq_encoders.intra_sentence_attention import IntraSent
 from allennlp.modules.seq2seq_encoders.pytorch_seq2seq_wrapper import PytorchSeq2SeqWrapper
 from allennlp.modules.seq2seq_encoders.seq2seq_encoder import Seq2SeqEncoder
 from allennlp.modules.stacked_alternating_lstm import StackedAlternatingLstm
+from allennlp.modules.seq2seq_encoders.stacked_self_attention import StackedSelfAttentionEncoder
+from allennlp.modules.seq2seq_encoders.multi_head_self_attention import MultiHeadSelfAttention
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
@@ -64,7 +66,7 @@ class _Seq2SeqWrapper:
         return self.from_params(Params(kwargs))
 
     def from_params(self, params: Params) -> PytorchSeq2SeqWrapper:
-        if not params.pop('batch_first', True):
+        if not params.pop_bool('batch_first', True):
             raise ConfigurationError("Our encoder semantics assumes batch is always first!")
         if self._module_class in self.PYTORCH_MODELS:
             params['batch_first'] = True

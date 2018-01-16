@@ -61,6 +61,11 @@ class Train(Subcommand):
                                    type=str,
                                    help=argparse.SUPPRESS)
 
+        subparser.add_argument('-o', '--overrides',
+                               type=str,
+                               default="",
+                               help='a HOCON structure used to override the experiment configuration')
+
         subparser.set_defaults(func=train_model_from_args)
 
         return subparser
@@ -70,10 +75,10 @@ def train_model_from_args(args: argparse.Namespace):
     """
     Just converts from an ``argparse.Namespace`` object to string paths.
     """
-    train_model_from_file(args.param_path, args.serialization_dir)
+    train_model_from_file(args.param_path, args.serialization_dir, args.overrides)
 
 
-def train_model_from_file(parameter_filename: str, serialization_dir: str) -> Model:
+def train_model_from_file(parameter_filename: str, serialization_dir: str, overrides: str = "") -> Model:
     """
     A wrapper around :func:`train_model` which loads the params from a file.
 
@@ -85,7 +90,7 @@ def train_model_from_file(parameter_filename: str, serialization_dir: str) -> Mo
         The directory in which to save results and logs.
     """
     # Load the experiment config from a file and pass it to ``train_model``.
-    params = Params.from_file(parameter_filename)
+    params = Params.from_file(parameter_filename, overrides)
     return train_model(params, serialization_dir)
 
 
@@ -173,12 +178,12 @@ def train_model(params: Params, serialization_dir: str) -> Model:
                                   validation_data,
                                   trainer_params)
 
-    evaluate_on_test = params.pop("evaluate_on_test", False)
+    evaluate_on_test = params.pop_bool("evaluate_on_test", False)
     params.assert_empty('base train command')
     trainer.train()
 
     # Now tar up results
-    archive_model(serialization_dir)
+    archive_model(serialization_dir, files_to_archive=params.files_to_archive)
 
     if test_data and evaluate_on_test:
         test_data.index_instances(vocab)

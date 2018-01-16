@@ -3,6 +3,8 @@ from typing import Union, List, Dict, Any
 
 import torch
 from torch.autograd import Variable
+from torch.nn.modules import Dropout
+
 import numpy
 import h5py
 from overrides import overrides
@@ -38,24 +40,27 @@ class Elmo(torch.nn.Module, Registrable):
 
     Parameters
     ----------
-    options_file : ``str``
+    options_file : ``str``, required.
         ELMo JSON options file
-    weight_file : ``str``
+    weight_file : ``str``, required.
         ELMo hdf5 weight file
-    num_output_representations: ``int``
+    num_output_representations: ``int``, required.
         The number of ELMo representation layers to output.
-    do_layer_norm: ``bool``
+    do_layer_norm : ``bool``, optional, (default=False).
         Should we apply layer normalization (passed to ``ScalarMix``)?
+    dropout : ``float``, optional, (default = 0.5).
+        The dropout to be applied to the ELMo representations.
     """
     def __init__(self,
                  options_file: str,
                  weight_file: str,
                  num_output_representations: int,
-                 do_layer_norm: bool = False) -> None:
+                 do_layer_norm: bool = False,
+                 dropout: float = 0.5) -> None:
         super(Elmo, self).__init__()
 
         self._elmo_lstm = _ElmoBiLm(options_file, weight_file)
-
+        self._dropout = Dropout(p=dropout)
         self._scalar_mixes: Any = []
         for k in range(num_output_representations):
             scalar_mix = ScalarMix(self._elmo_lstm.num_layers, do_layer_norm=do_layer_norm)
@@ -67,40 +72,65 @@ class Elmo(torch.nn.Module, Registrable):
         """
         Parameters
         ----------
-        inputs: ``torch.autograd.Variable``
+        inputs : ``torch.autograd.Variable``
             Shape ``(batch_size, timesteps, 50)`` of character ids representing the current batch.
+            We also accept tensors with additional optional dimensions:
+            ``(batch_size, dim0, dim1, ..., dimn, timesteps, 50)``
 
         Returns
         -------
         Dict with keys:
-
         ``'elmo_representations'``: ``List[torch.autograd.Variable]``
             A ``num_output_representations`` list of ELMo representations for the input sequence.
             Each representation is shape ``(batch_size, timesteps, embedding_dim)``
         ``'mask'``:  ``torch.autograd.Variable``
             Shape ``(batch_size, timesteps)`` long tensor with sequence mask.
         """
-        bilm_output = self._elmo_lstm(inputs)
+        # reshape the input if needed
+        original_shape = inputs.size()
+        timesteps, num_characters = original_shape[-2:]
+        if len(original_shape) > 3:
+            reshaped_inputs = inputs.view(-1, timesteps, num_characters)
+        else:
+            reshaped_inputs = inputs
+
+        # run the biLM
+        bilm_output = self._elmo_lstm(reshaped_inputs)
         layer_activations = bilm_output['activations']
         mask_with_bos_eos = bilm_output['mask']
 
-        elmo_representations = []
+        # compute the elmo representations
+        representations = []
         for scalar_mix in self._scalar_mixes:
-            representation_with_bos_eos = scalar_mix.forward(layer_activations, mask_with_bos_eos)
+            representation_with_bos_eos = scalar_mix(layer_activations, mask_with_bos_eos)
             representation_without_bos_eos, mask_without_bos_eos = remove_sentence_boundaries(
                     representation_with_bos_eos, mask_with_bos_eos
             )
-            elmo_representations.append(representation_without_bos_eos)
+            representations.append(self._dropout(representation_without_bos_eos))
 
-        return {'elmo_representations': elmo_representations, 'mask': mask_without_bos_eos}
+        # reshape if necessary
+        if len(original_shape) > 3:
+            mask = mask_without_bos_eos.view(original_shape[:-1])
+            elmo_representations = [representation.view(original_shape[:-1] + (-1, ))
+                                    for representation in representations]
+        else:
+            mask = mask_without_bos_eos
+            elmo_representations = representations
+
+        return {'elmo_representations': elmo_representations, 'mask': mask}
 
     @classmethod
     def from_params(cls, params: Params) -> 'Elmo':
+        # Add files to archive
+        params.add_file_to_archive('options_file')
+        params.add_file_to_archive('weight_file')
+
         options_file = params.pop('options_file')
         weight_file = params.pop('weight_file')
         num_output_representations = params.pop('num_output_representations')
-        do_layer_norm = params.pop('do_layer_norm', False)
+        do_layer_norm = params.pop_bool('do_layer_norm', False)
         params.assert_empty(cls.__name__)
+
         return cls(options_file, weight_file, num_output_representations, do_layer_norm)
 
 
@@ -285,6 +315,7 @@ class _ElmoCharacterEncoder(torch.nn.Module):
             conv.bias.requires_grad = False
 
             convolutions.append(conv)
+            self.add_module('char_conv_{}'.format(i), conv)
 
         self._convolutions = convolutions
 
