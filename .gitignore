@@ -9,4 +9,5 @@ allennlp.egg-info/
 build/
 dist/
 .mypy_cache
-
+tmp/
+experiments/

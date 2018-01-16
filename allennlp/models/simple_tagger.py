@@ -14,6 +14,7 @@ from allennlp.models.model import Model
 from allennlp.nn import InitializerApplicator, RegularizerApplicator
 from allennlp.nn.util import get_text_field_mask, sequence_cross_entropy_with_logits
 from allennlp.training.metrics import CategoricalAccuracy
+from allennlp.training.metrics import BooleanAccuracy
 
 
 @Model.register("simple_tagger")
@@ -55,9 +56,10 @@ class SimpleTagger(Model):
                                      "input dimension of the phrase_encoder. Found {} and {}, "
                                      "respectively.".format(text_field_embedder.get_output_dim(),
                                                             stacked_encoder.get_input_dim()))
+
         self.metrics = {
-                "accuracy": CategoricalAccuracy(),
-                "accuracy3": CategoricalAccuracy(top_k=3)
+                "token_accuracy": CategoricalAccuracy(),
+                "accuracy": BooleanAccuracy()
         }
 
         initializer(self)
@@ -109,9 +111,11 @@ class SimpleTagger(Model):
 
         if tags is not None:
             loss = sequence_cross_entropy_with_logits(logits, tags, mask)
-            for metric in self.metrics.values():
-                metric(logits, tags, mask.float())
             output_dict["loss"] = loss
+
+            predictions = class_probabilities.max(class_probabilities.dim() - 1)[1]
+            self.metrics['accuracy'](predictions, tags, mask)
+            self.metrics['token_accuracy'](logits, tags, mask.float())
 
         return output_dict
 

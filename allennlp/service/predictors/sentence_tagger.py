@@ -3,6 +3,7 @@ from overrides import overrides
 from allennlp.common.util import JsonDict, sanitize
 from allennlp.data import DatasetReader, Instance
 from allennlp.data.tokenizers.word_splitter import SpacyWordSplitter
+from allennlp.data.tokenizers.word_splitter import JustSpacesWordSplitter
 from allennlp.models import Model
 from allennlp.service.predictors.predictor import Predictor
 
@@ -18,7 +19,7 @@ class SentenceTaggerPredictor(Predictor):
     """
     def __init__(self, model: Model, dataset_reader: DatasetReader) -> None:
         super().__init__(model, dataset_reader)
-        self._tokenizer = SpacyWordSplitter(language='en_core_web_sm', pos_tags=True)
+        self._tokenizer = JustSpacesWordSplitter()
 
     @overrides
     def _json_to_instance(self, json: JsonDict) -> Instance:

@@ -12,6 +12,8 @@ from allennlp.models.model import Model
 from allennlp.nn import InitializerApplicator, RegularizerApplicator
 import allennlp.nn.util as util
 from allennlp.training.metrics import SpanBasedF1Measure
+from allennlp.training.metrics import CategoricalAccuracy
+from allennlp.training.metrics import BooleanAccuracy
 
 @Model.register("crf_tagger")
 class CrfTagger(Model):
@@ -52,7 +54,10 @@ class CrfTagger(Model):
                                                            self.num_tags))
         self.crf = ConditionalRandomField(self.num_tags)
 
-        self.span_metric = SpanBasedF1Measure(vocab, tag_namespace=label_namespace)
+        self.metrics = {
+                "token_accuracy": CategoricalAccuracy(),
+                "accuracy": BooleanAccuracy()
+        }
 
         if text_field_embedder.get_output_dim() != encoder.get_input_dim():
             raise ConfigurationError("The output dimension of the text_field_embedder must match the "
@@ -109,14 +114,16 @@ class CrfTagger(Model):
             log_likelihood = self.crf.forward(logits, tags, mask)
             output["loss"] = -log_likelihood
 
-            # Represent viterbi tags as "class probabilities" that we can
-            # feed into the `span_metric`
-            class_probabilities = logits * 0.
-            for i, instance_tags in enumerate(predicted_tags):
-                for j, tag_id in enumerate(instance_tags):
-                    class_probabilities[i, j, tag_id] = 1
+            # Pad predicted tags to be comparable
+            max_length = max([len(t) for t in predicted_tags])
+            padded = []
+            for t in predicted_tags:
+                n_padding = max_length - len(t)
+                padded.append(t + [0] * n_padding)
+            padded = torch.LongTensor(padded)
 
-            self.span_metric(class_probabilities, tags, mask)
+            self.metrics['accuracy'](padded, tags, mask)
+            self.metrics['token_accuracy'](logits, tags, mask.float())
 
         return output
 
@@ -137,8 +144,7 @@ class CrfTagger(Model):
 
     @overrides
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
-        metric_dict = self.span_metric.get_metric(reset=reset)
-        return {x: y for x, y in metric_dict.items() if "overall" in x}
+        return {metric_name: metric.get_metric(reset) for metric_name, metric in self.metrics.items()}
 
     @classmethod
     def from_params(cls, vocab: Vocabulary, params: Params) -> 'CrfTagger':
