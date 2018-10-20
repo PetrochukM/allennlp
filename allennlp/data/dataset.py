@@ -55,7 +55,12 @@ class Dataset:
         ``IndexedFields``.  This modifies the current object, it does not return a new object.
         """
         logger.info("Indexing dataset")
-        for instance in tqdm.tqdm(self.instances):
+        if len(self.instances) > 1:
+            iterator = tqdm.tqdm(self.instances)
+        else:
+            iterator = self.instances
+
+        for instance in iterator:
             instance.index_fields(vocab)
 
     def get_padding_lengths(self) -> Dict[str, Dict[str, int]]:

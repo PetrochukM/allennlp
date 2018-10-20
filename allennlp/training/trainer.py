@@ -18,7 +18,7 @@ import torch.optim.lr_scheduler
 from torch.nn.utils.clip_grad import clip_grad_norm
 from torch.optim.lr_scheduler import _LRScheduler as PytorchLRScheduler  # pylint: disable=protected-access
 import tqdm
-from tensorboard import SummaryWriter
+from tensorboardX import SummaryWriter
 
 from allennlp.common import Params
 from allennlp.common.checks import ConfigurationError
